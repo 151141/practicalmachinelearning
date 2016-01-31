@@ -1,0 +1,141 @@
+---
+title: 'Practical Machine Learning Course Project: Analysis and Interpretation of Quantified Self Movement Data'
+author: "/Oana Tamasoiu"
+date: "30 January 2016"
+output: html_document
+---
+
+##Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this analysis, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the [website](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset). 
+
+The goal of the project is to predict the manner in which the participants did the exercise, represented by the **classe** variable in the training dataset below. According to Reference 1 (see References), the **classe** variable is split into five categories, representing the way the exercise was performed: class A (following the exact specifications), class B (throwing the elbow in front), class C (lifting the dumbbell only halfway), class D (lowering the dumbbell only halfway) and class E (throwing the hips to the front). Class A corresponds to the good execution of the exercise, while the other 4 classes correspond to common mistakes.
+
+##Importing and pre-filtering the data
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+library(RCurl) 
+library(caret) 
+library(ggplot2)
+library(rattle)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+```
+
+The training dataset for the project are found [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv), and the testing dataset are found [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv). 
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+setwd("D:/My Documents/Coursera Data Science/practical_machine_learning/courseProject")
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "./training.csv", method = "libcurl")
+training <- read.csv("./training.csv", header = TRUE, na.strings=c("NA","#DIV/0!",""))
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "./testing.csv", method = "libcurl")
+testing <- read.csv("./testing.csv", header = TRUE, na.strings=c("NA","#DIV/0!",""))
+```
+
+The training dataset has 19622 observations (rows) and 160 features (columns), while the testing dataset has 20 and 160, respectively. 
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+dim(training)
+dim(testing)
+```
+
+After a quick investigation of the training dataset, we remove all the columns which contain at least 20 missing  values (NA). We also remove the "X" column, as it contains superfluous information.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+training <- training[,colSums(is.na(training))<20]
+training <- training[,-1]
+```
+
+The tidy dataset now contains 59 features: 
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+dim(training)
+```
+
+Plot the Class variable and the Total_acceleration_belt
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+qplot(training$classe, training$total_accel_belt, geom = "boxplot", xlab = "Class", ylab = "Total acceleration belt")
+```
+
+##Splitting the working dataset
+
+For the construction of our prediction algorithm, we split the given training dataset into two subsets: a pure training dataset, containing **p=70%** of the initial set, as well as a validation set, containing the remaining **p=30%**. As their names indicate, the training subset is used to train our prediction model, and the validation set is used to validate our model. 
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+inTrain <- createDataPartition(y=training$classe, p=.7, list = FALSE)
+myTraining <- training[inTrain, ]
+myTesting <- training[-inTrain, ]
+```
+
+##Cross-validation
+
+Below we set the seed for reproducibility purposes and we configure parallel processing, for improving the computation speed (for more details, see Ref. 3).
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+set.seed(13323)
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+For the purpose of **cross validation**, we configure the **trainControl** function. Its most critical arguments are the resampling method, the number that specifies the quantity of folds for k-fold cross-validation, and allowParallel which tells caret to use the cluster that we've registered previously.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+ctrl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+```
+
+##Prediction algorithm
+
+We fit a predictive model based on the **random forest** algorithm from the **caret** package. Random forests, along with bagging and boosting (and others) are algorithms created to improve the performance of single trees methods, by putting together many trees and  where predictions are aggregated across these trees. The main advantage of these kind of algorithms is that they have built-in feature selection, if a predictor was not used in any split, the resulting model is completely independent of the that data. They are also the most accurate.    
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+modFit <- train(classe ~., method = "rf", data = myTraining, trControl = ctrl)
+modFit
+stopCluster(cluster)
+```
+
+This is how a part of a single tree in the algorithm looks like, for example the third one: 
+
+```{r}
+head(getTree(modFit$finalModel, k=3), n = 20)
+```
+
+##Model performance
+
+We estimate the performance of the model on the validation data set:
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+confusionMatrix.train(modFit)
+confusionMatrix(myTesting$classe, predict(modFit, myTesting))
+```
+
+The model is 99.9% accurate. 
+
+We can apply the build prediction algorithm to the initial testing dataset. 
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+pred <- predict(modFit, testing)
+pred
+```
+
+Calculate the estimated out of sample error.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+pred_val <- predict(modFit, myTesting)
+#true accuracy of the predicted model
+oose_accuracy <- sum(pred_val == myTesting$classe)/length(pred_val)
+oose_accuracy
+#out of sample error is 1-oose_accuracy
+oose <- 1 - oose_accuracy
+oose
+```
+
+##References: 
+1. Coursera Practical Machine Learning, Johns Hopkins University: https://www.coursera.org/learn/practical-machine-learning
+2. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013
+3. For parallel processing: https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md
